@@ -1,0 +1,10 @@
+[project]
+name = "ytdlp-wrapper"
+version = "1.0.0"
+description = "A lightweight Python wrapper around yt-dlp for downloading YouTube Watch Later playlists"
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = ["yt-dlp>=2023.0.0", "python-dotenv>=0.19.0", "rich>=13.0.0"]
+
+[project.scripts]
+# No scripts needed - run directly with: uv run python download.py
