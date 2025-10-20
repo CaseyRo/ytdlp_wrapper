@@ -468,15 +468,39 @@ def run_download():
             console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
 
     with YoutubeDL(ydl_opts) as ydl:
-        # You can optionally filter out already-downloaded via our JSON archive:
-        # But easier: let yt-dlp fetch playlist entries, then skip by ourselves
-        # Actually, we can pass a custom "download" list: for each entry, if id in archive, skip
+        # Use yt-dlp's built-in playlist management for efficiency
+        # This avoids downloading metadata for all 3000+ videos
+        if MAX_DOWNLOADS:
+            try:
+                max_dl = int(MAX_DOWNLOADS)
+                # Calculate how many videos we need to check to find max_dl new ones
+                # Estimate that ~50% might be new (adjust this based on your archive size)
+                estimated_check = max_dl * 2
+                # But don't check more than 100 videos to avoid long waits
+                estimated_check = min(estimated_check, 100)
+
+                console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
+
+                # Temporarily modify playlist_end to limit metadata extraction
+                original_playlist_end = ydl_opts.get("playlist_end")
+                ydl_opts["playlist_end"] = estimated_check
+
+                # Recreate ydl with updated options
+                ydl = YoutubeDL(ydl_opts)
+
+            except ValueError:
+                console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS}")
+                max_dl = None
+        else:
+            max_dl = None
+
+        # Extract playlist info with limited scope
         info = ydl.extract_info(WATCHLATER_URL, download=False)
         entries = info.get("entries", [])
-        to_download = []
 
-        # Calculate max downloads to respect MAX_DOWNLOADS setting
-        max_to_download = int(MAX_DOWNLOADS) if MAX_DOWNLOADS else None
+        # Filter out already downloaded videos
+        to_download = []
+        skipped_count = 0
 
         for ent in entries:
             vid = ent.get("id")
@@ -484,18 +508,18 @@ def run_download():
                 continue
             if vid in archive:
                 stats["skipped"].append({"video_id": vid, "title": ent.get('title')})
+                skipped_count += 1
                 console.print(f"[yellow]⏭️  Skipped:[/yellow] {ent.get('title', 'Unknown')} [dim](already downloaded)[/dim]")
             else:
                 to_download.append(ent.get("webpage_url"))
                 # Stop if we've reached max downloads limit
-                if max_to_download and len(to_download) >= max_to_download:
-                    remaining = len(entries) - entries.index(ent) - 1
-                    if remaining > 0:
-                        console.print(f"[dim]ℹ️  Stopping playlist scan (reached MAX_DOWNLOADS limit of {max_to_download}, {remaining} videos not checked)[/dim]")
+                if max_dl and len(to_download) >= max_dl:
                     break
 
         if not to_download:
             console.print("[yellow]ℹ️  Nothing new to download.[/yellow]")
+            if skipped_count > 0:
+                console.print(f"[dim]ℹ️  Found {skipped_count} already downloaded videos in recent playlist[/dim]")
             show_completion_summary()
             return
 
