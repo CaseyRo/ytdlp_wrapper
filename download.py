@@ -255,7 +255,7 @@ def progress_hook(d):
                     "video_id": vid,
                     "title": info.get("title"),
                     "upload_date": info.get("upload_date"),
-                    "download_date": datetime.datetime.utcnow().isoformat() + "Z",
+                    "download_date": datetime.datetime.now(datetime.UTC).isoformat(),
                     "filepath": filepath,
                 }
                 # Save to archive (use original format without video_id key)
@@ -310,7 +310,7 @@ def rename_fallback_missing_timestamp(filepath, info):
     parts = fname.split(" ", 1)
     if parts and (parts[0] == "NA" or parts[0] == ""):
         # new timestamp
-        ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
         newname = f"{ts} {parts[1]}"
         newpath = os.path.join(dirname, newname)
         try:
