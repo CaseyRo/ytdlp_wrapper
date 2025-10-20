@@ -468,8 +468,8 @@ def run_download():
             console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
 
     with YoutubeDL(ydl_opts) as ydl:
-        # Use yt-dlp's built-in playlist management for efficiency
-        # This avoids downloading metadata for all 3000+ videos
+        # Use yt-dlp's playlist_items option to limit metadata extraction
+        # This is the correct way to avoid downloading metadata for all 3000+ videos
         if MAX_DOWNLOADS:
             try:
                 max_dl = int(MAX_DOWNLOADS)
@@ -481,9 +481,9 @@ def run_download():
 
                 console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
 
-                # Temporarily modify playlist_end to limit metadata extraction
-                original_playlist_end = ydl_opts.get("playlist_end")
-                ydl_opts["playlist_end"] = estimated_check
+                # Use playlist_items to limit the playlist extraction
+                # Format: "1:20" means items 1 through 20 (first 20)
+                ydl_opts["playlist_items"] = f"1:{estimated_check}"
 
                 # Recreate ydl with updated options
                 ydl = YoutubeDL(ydl_opts)
@@ -494,7 +494,7 @@ def run_download():
         else:
             max_dl = None
 
-        # Extract playlist info with limited scope
+        # Extract playlist info with limited scope using playlist_items
         info = ydl.extract_info(WATCHLATER_URL, download=False)
         entries = info.get("entries", [])
 
