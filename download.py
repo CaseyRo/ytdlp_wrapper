@@ -470,10 +470,14 @@ def run_download():
     with YoutubeDL(ydl_opts) as ydl:
         # You can optionally filter out already-downloaded via our JSON archive:
         # But easier: let yt-dlp fetch playlist entries, then skip by ourselves
-        # Actually, we can pass a custom “download” list: for each entry, if id in archive, skip
+        # Actually, we can pass a custom "download" list: for each entry, if id in archive, skip
         info = ydl.extract_info(WATCHLATER_URL, download=False)
         entries = info.get("entries", [])
         to_download = []
+
+        # Calculate max downloads to respect MAX_DOWNLOADS setting
+        max_to_download = int(MAX_DOWNLOADS) if MAX_DOWNLOADS else None
+
         for ent in entries:
             vid = ent.get("id")
             if vid is None:
@@ -483,6 +487,12 @@ def run_download():
                 console.print(f"[yellow]⏭️  Skipped:[/yellow] {ent.get('title', 'Unknown')} [dim](already downloaded)[/dim]")
             else:
                 to_download.append(ent.get("webpage_url"))
+                # Stop if we've reached max downloads limit
+                if max_to_download and len(to_download) >= max_to_download:
+                    remaining = len(entries) - entries.index(ent) - 1
+                    if remaining > 0:
+                        console.print(f"[dim]ℹ️  Stopping playlist scan (reached MAX_DOWNLOADS limit of {max_to_download}, {remaining} videos not checked)[/dim]")
+                    break
 
         if not to_download:
             console.print("[yellow]ℹ️  Nothing new to download.[/yellow]")
