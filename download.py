@@ -467,34 +467,29 @@ def run_download():
         except ValueError:
             console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
 
-    with YoutubeDL(ydl_opts) as ydl:
-        # Use yt-dlp's playlist_items option to limit metadata extraction
-        # This is the correct way to avoid downloading metadata for all 3000+ videos
-        if MAX_DOWNLOADS:
-            try:
-                max_dl = int(MAX_DOWNLOADS)
-                # Calculate how many videos we need to check to find max_dl new ones
-                # Estimate that ~50% might be new (adjust this based on your archive size)
-                estimated_check = max_dl * 2
-                # But don't check more than 100 videos to avoid long waits
-                estimated_check = min(estimated_check, 100)
+    # First, let's try a simpler approach - just limit the playlist processing
+    # and then use yt-dlp's built-in download limiting
+    if MAX_DOWNLOADS:
+        try:
+            max_dl = int(MAX_DOWNLOADS)
+            # Set a reasonable limit for playlist processing to avoid downloading all metadata
+            # We'll check 3x the max downloads to ensure we find enough new videos
+            estimated_check = max_dl * 3
+            estimated_check = min(estimated_check, 100)  # Cap at 100 to avoid long waits
 
-                console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
+            console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
 
-                # Use playlist_items to limit the playlist extraction
-                # Format: "1:20" means items 1 through 20 (first 20)
-                ydl_opts["playlist_items"] = f"1:{estimated_check}"
+            # Use playlist_items to limit metadata extraction
+            ydl_opts["playlist_items"] = f"1:{estimated_check}"
 
-                # Recreate ydl with updated options
-                ydl = YoutubeDL(ydl_opts)
-
-            except ValueError:
-                console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS}")
-                max_dl = None
-        else:
+        except ValueError:
+            console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS}")
             max_dl = None
+    else:
+        max_dl = None
 
-        # Extract playlist info with limited scope using playlist_items
+    with YoutubeDL(ydl_opts) as ydl:
+        # Extract playlist info with limited scope
         info = ydl.extract_info(WATCHLATER_URL, download=False)
         entries = info.get("entries", [])
 
@@ -541,7 +536,14 @@ def run_download():
             except:
                 pass
 
-        # Now actually download (ignoreerrors=True will skip failed videos)
+        # Now actually download with proper limiting
+        # Use yt-dlp's built-in max_downloads if we have a limit
+        if max_dl and len(to_download) > max_dl:
+            # Limit the downloads to max_dl videos
+            to_download = to_download[:max_dl]
+            console.print(f"[cyan]📝 Limited to {max_dl} downloads as configured[/cyan]\n")
+
+        # Download the videos
         ydl.download(to_download)
 
         # After download, check which videos failed (attempted but not downloaded)
