@@ -34,6 +34,15 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", None)
 WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", "80"))
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", None)
 
+# Storage retention configuration (optional)
+RETENTION_DAYS = os.environ.get("RETENTION_DAYS", None)
+
+# Playlist management configuration (optional)
+PLAYLIST_REVERSE = os.environ.get("PLAYLIST_REVERSE", "true").lower() in ("true", "1", "yes")  # Default: true (newest first)
+MAX_DOWNLOADS = os.environ.get("MAX_DOWNLOADS", None)  # Default: None (unlimited)
+PLAYLIST_START = os.environ.get("PLAYLIST_START", None)  # Default: None (start from beginning)
+PLAYLIST_END = os.environ.get("PLAYLIST_END", None)  # Default: None (go to end)
+
 # Initialize Rich console
 console = Console()
 
@@ -42,7 +51,9 @@ stats = {
     "start_time": None,
     "downloaded": [],
     "skipped": [],
-    "errors": []
+    "errors": [],
+    "cleaned_files": [],
+    "cleaned_bytes": 0
 }
 
 def show_banner():
@@ -58,11 +69,37 @@ def show_banner():
 
 def show_config_summary():
     """Display configuration summary panel"""
+    retention_status = '✗ Disabled'
+    if RETENTION_DAYS:
+        try:
+            days = int(RETENTION_DAYS)
+            if days > 0:
+                retention_status = f'✓ {days} days'
+            else:
+                retention_status = '✗ Disabled (invalid value)'
+        except (ValueError, TypeError):
+            retention_status = '✗ Disabled (invalid value)'
+
+    # Playlist management status
+    playlist_order = '✓ Newest first' if PLAYLIST_REVERSE else 'Oldest first'
+    max_dl_status = f'max {MAX_DOWNLOADS}' if MAX_DOWNLOADS else 'unlimited'
+
+    # Build playlist range string
+    range_parts = []
+    if PLAYLIST_START:
+        range_parts.append(f'start={PLAYLIST_START}')
+    if PLAYLIST_END:
+        range_parts.append(f'end={PLAYLIST_END}')
+    playlist_range = ', '.join(range_parts) if range_parts else 'full playlist'
+
     config_text = f"""[bold]Playlist:[/bold] {WATCHLATER_URL}
 [bold]Output Directory:[/bold] {OUTPUT_DIR}
 [bold]Archive File:[/bold] {ARCHIVE_JSON}
 [bold]Cookies:[/bold] {'✓ Configured' if COOKIES_FILE else '✗ Not set'}
-[bold]Webhook:[/bold] {'✓ Enabled (' + WEBHOOK_URL + ':' + str(WEBHOOK_PORT) + ')' if WEBHOOK_URL else '✗ Disabled'}"""
+[bold]Webhook:[/bold] {'✓ Enabled (' + WEBHOOK_URL + ':' + str(WEBHOOK_PORT) + ')' if WEBHOOK_URL else '✗ Disabled'}
+[bold]Retention:[/bold] {retention_status}
+[bold]Playlist Order:[/bold] {playlist_order}
+[bold]Download Limit:[/bold] {max_dl_status} ({playlist_range})"""
 
     panel = Panel(
         config_text,
@@ -85,8 +122,18 @@ def show_completion_summary():
     summary_text = f"""[bold]Total Videos:[/bold] {len(stats['downloaded']) + len(stats['skipped'])}
 [bold green]Downloaded:[/bold green] {len(stats['downloaded'])}
 [bold yellow]Skipped:[/bold yellow] {len(stats['skipped'])}
-[bold red]Errors:[/bold red] {len(stats['errors'])}
-[bold]Duration:[/bold] {minutes}m {seconds}s"""
+[bold red]Errors:[/bold red] {len(stats['errors'])}"""
+
+    # Add cleanup stats if any files were cleaned
+    if stats['cleaned_files']:
+        size_mb = stats['cleaned_bytes'] / (1024 * 1024)
+        if size_mb >= 1024:
+            size_str = f"{size_mb / 1024:.2f} GB"
+        else:
+            size_str = f"{size_mb:.1f} MB"
+        summary_text += f"\n[bold orange1]Cleaned:[/bold orange1] {len(stats['cleaned_files'])} files ({size_str})"
+
+    summary_text += f"\n[bold]Duration:[/bold] {minutes}m {seconds}s"
 
     panel = Panel(
         summary_text,
@@ -258,6 +305,90 @@ def rename_fallback_missing_timestamp(filepath, info):
             print("Warning: rename fallback failed:", e, file=sys.stderr)
     return filepath
 
+def cleanup_old_files(archive, retention_days):
+    """
+    Delete files older than retention_days based on download_date in archive.
+    Returns updated archive with removed entries.
+    """
+    if not retention_days or retention_days <= 0:
+        return archive
+
+    # Calculate cutoff date
+    cutoff_date = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=retention_days)
+
+    # Track files to delete
+    to_delete = []
+
+    # Find files older than retention period
+    for video_id, metadata in archive.items():
+        download_date_str = metadata.get("download_date")
+        if not download_date_str:
+            # No download_date, skip with warning
+            console.print(f"[yellow]⚠[/yellow] Skipping cleanup for {video_id}: missing download_date")
+            continue
+
+        try:
+            # Parse ISO format date (e.g., "2024-10-15T10:30:00Z")
+            download_date = datetime.datetime.fromisoformat(download_date_str.replace('Z', '+00:00'))
+            # Make timezone-naive for comparison
+            download_date = download_date.replace(tzinfo=None)
+
+            if download_date < cutoff_date:
+                to_delete.append((video_id, metadata))
+        except (ValueError, AttributeError) as e:
+            console.print(f"[yellow]⚠[/yellow] Invalid download_date for {video_id}: {e}")
+            continue
+
+    if not to_delete:
+        console.print("[dim]ℹ️  No files to clean up (all within retention period)[/dim]")
+        return archive
+
+    # Delete files and track results
+    console.print(f"[cyan]🗑️  Cleaning up {len(to_delete)} file(s) older than {retention_days} days...[/cyan]")
+
+    deleted_count = 0
+    for video_id, metadata in to_delete:
+        filepath = metadata.get("filepath")
+        if not filepath:
+            # No filepath, just remove from archive
+            archive.pop(video_id, None)
+            continue
+
+        try:
+            # Get file size before deletion
+            if os.path.exists(filepath):
+                file_size = os.path.getsize(filepath)
+                os.remove(filepath)
+                stats["cleaned_bytes"] += file_size
+                deleted_count += 1
+                console.print(f"[dim]  Deleted: {os.path.basename(filepath)}[/dim]")
+            else:
+                # File already missing, just log warning
+                console.print(f"[yellow]⚠[/yellow] File not found (already deleted?): {filepath}")
+
+            # Remove from archive
+            archive.pop(video_id, None)
+            stats["cleaned_files"].append(video_id)
+
+        except PermissionError:
+            console.print(f"[yellow]⚠[/yellow] Permission denied deleting: {filepath}")
+            # Keep in archive since we couldn't delete
+        except Exception as e:
+            console.print(f"[yellow]⚠[/yellow] Error deleting {filepath}: {e}")
+            # Keep in archive since we couldn't delete
+
+    # Show summary
+    if deleted_count > 0:
+        size_mb = stats["cleaned_bytes"] / (1024 * 1024)
+        if size_mb >= 1024:
+            size_str = f"{size_mb / 1024:.2f} GB"
+        else:
+            size_str = f"{size_mb:.1f} MB"
+        console.print(f"[green]✅ Cleanup complete:[/green] Removed {deleted_count} file(s), freed {size_str}")
+
+    console.print()
+    return archive
+
 def run_download():
     # Initialize start time
     stats["start_time"] = time.time()
@@ -269,22 +400,56 @@ def run_download():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     archive = load_archive()
 
+    # Run cleanup if retention is configured
+    if RETENTION_DAYS:
+        try:
+            retention_days = int(RETENTION_DAYS)
+            if retention_days > 0:
+                archive = cleanup_old_files(archive, retention_days)
+                save_archive(archive)
+            else:
+                console.print("[yellow]⚠[/yellow] RETENTION_DAYS must be a positive number (cleanup disabled)")
+                console.print()
+        except (ValueError, TypeError):
+            console.print(f"[yellow]⚠[/yellow] Invalid RETENTION_DAYS value: {RETENTION_DAYS} (cleanup disabled)")
+            console.print()
+
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",
         "paths": {"home": OUTPUT_DIR},
         "progress_hooks": [progress_hook],
-        "download_archive": None,  # we won’t use the built-in archive, we use JSON
+        "download_archive": None,  # we won't use the built-in archive, we use JSON
         "outtmpl": determine_outtmpl(),
         "merge_output_format": "mp4",  # or mkv, as you prefer
         "quiet": False,
         "no_warnings": True,
         # set mtime so the file timestamp matches upload date (if available)
-        # default behavior of yt-dlp is to set file mtime to upload-date if known. (see man) :contentReference[oaicite:0]{index=0}
+        # default behavior of yt-dlp is to set file mtime to upload-date if known. (see man)
         # If you want always use download time, you can disable it:
         # "no_mtime": True,
+
+        # Playlist management options
+        "playlistreverse": PLAYLIST_REVERSE,  # Download newest first (default: true)
     }
+
+    # Add optional playlist management settings
     if COOKIES_FILE:
         ydl_opts["cookiefile"] = COOKIES_FILE
+    if MAX_DOWNLOADS:
+        try:
+            ydl_opts["max_downloads"] = int(MAX_DOWNLOADS)
+        except ValueError:
+            console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS} (ignoring)")
+    if PLAYLIST_START:
+        try:
+            ydl_opts["playlist_start"] = int(PLAYLIST_START)
+        except ValueError:
+            console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_START value: {PLAYLIST_START} (ignoring)")
+    if PLAYLIST_END:
+        try:
+            ydl_opts["playlist_end"] = int(PLAYLIST_END)
+        except ValueError:
+            console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
 
     with YoutubeDL(ydl_opts) as ydl:
         # You can optionally filter out already-downloaded via our JSON archive:

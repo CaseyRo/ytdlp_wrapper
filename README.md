@@ -136,6 +136,11 @@ uv sync
 | `WEBHOOK_URL` | HTTP endpoint for download notifications | `None` (optional) |
 | `WEBHOOK_PORT` | Port for webhook endpoint | `80` |
 | `WEBHOOK_SECRET` | Bearer token for webhook authentication | `None` (optional) |
+| `RETENTION_DAYS` | Automatic cleanup: delete files older than X days | `None` (disabled by default) |
+| `PLAYLIST_REVERSE` | Download playlist in reverse order (newest first) | `true` |
+| `MAX_DOWNLOADS` | Maximum NEW videos to download per run | `None` (unlimited) |
+| `PLAYLIST_START` | Start downloading from playlist item # | `None` (start from beginning) |
+| `PLAYLIST_END` | Stop downloading at playlist item # | `None` (go to end) |
 
 **Configuration priority:** Command-line environment variables > .env file > defaults
 
@@ -254,6 +259,150 @@ WEBHOOK_PORT=443
 # Run a download and check webhook.site for the payload
 uv run python download.py
 ```
+
+### Storage Management (Optional)
+
+Automatically manage disk space by deleting old videos based on a retention policy.
+
+**Configuration:**
+
+Edit your `.env` file:
+```bash
+# Keep only videos downloaded in the last 30 days
+RETENTION_DAYS=30
+```
+
+**How It Works:**
+
+1. **On Each Run:** Before downloading new videos, the script checks all archived videos
+2. **Age Calculation:** Compares each file's `download_date` against the retention threshold
+3. **Automatic Cleanup:** Deletes files older than `RETENTION_DAYS` and removes them from the archive
+4. **Space Reporting:** Shows how many files were deleted and how much space was freed
+
+**Example Output:**
+
+```
+🗑️  Cleaning up 5 file(s) older than 30 days...
+  Deleted: 20240915 Old Video [abc123].mp4
+  Deleted: 20240916 Another Video [def456].mp4
+✅ Cleanup complete: Removed 5 file(s), freed 2.3 GB
+```
+
+**Important Notes:**
+
+- **Disabled by Default:** If `RETENTION_DAYS` is not set, all files are kept indefinitely
+- **Based on Download Date:** Retention uses when you downloaded the video, not when it was uploaded
+- **Safe Operation:** Missing files are handled gracefully (no errors if you manually deleted something)
+- **Archive Sync:** The JSON archive automatically updates to match the filesystem
+
+**Use Cases:**
+
+- **Limited Storage:** Keep your archive size manageable on devices with limited disk space
+- **Recent Content Only:** Focus on watching newer videos and let old ones expire automatically
+- **Scheduled Downloads:** Perfect for cron jobs - always keeps the last X days of content
+
+**Testing Retention:**
+
+```bash
+# Test with a short retention period
+RETENTION_DAYS=7 uv run python download.py
+
+# Disable temporarily (keeps all files)
+RETENTION_DAYS= uv run python download.py
+```
+
+### Managing Large Playlists
+
+For huge Watch Later playlists (100+ videos), use these options to control what gets downloaded.
+
+**Configuration:**
+
+Edit your `.env` file:
+```bash
+# Download newest videos first (highly recommended for Watch Later)
+PLAYLIST_REVERSE=true
+
+# Download at most 25 new videos per run
+MAX_DOWNLOADS=25
+
+# Or limit to specific playlist range
+PLAYLIST_START=1
+PLAYLIST_END=50
+```
+
+**Default Behavior:**
+
+By default, the script is optimized for Watch Later playlists:
+- ✅ **Newest first** (`PLAYLIST_REVERSE=true`) - Always downloads your most recent additions first
+- ✅ **Unlimited downloads** - Processes entire playlist (may take a long time!)
+- ✅ **Smart skipping** - Archive automatically skips already-downloaded videos
+
+**Recommended Settings for Large Playlists:**
+
+```bash
+# Best for daily automation
+PLAYLIST_REVERSE=true
+MAX_DOWNLOADS=25
+RETENTION_DAYS=30
+
+# Result: Daily downloads of up to 25 newest videos, keeping last 30 days
+```
+
+**Use Cases:**
+
+**Daily Catch-Up:**
+```bash
+PLAYLIST_REVERSE=true
+MAX_DOWNLOADS=10
+# Run daily via cron - always get your 10 newest additions
+```
+
+**Initial Bulk Download (Chunked):**
+```bash
+# Week 1: First 100 videos
+PLAYLIST_START=1
+PLAYLIST_END=100
+
+# Week 2: Next 100 videos
+PLAYLIST_START=101
+PLAYLIST_END=200
+```
+
+**Download Only Recent Additions:**
+```bash
+PLAYLIST_REVERSE=true
+PLAYLIST_END=50
+# Only process the 50 most recent items in playlist
+```
+
+**Why PLAYLIST_REVERSE=true?**
+
+For Watch Later playlists specifically:
+- Your newest additions are most relevant
+- Download them first before they're removed from YouTube
+- If interrupted, you'll have the videos you actually want to watch
+- Works perfectly with `MAX_DOWNLOADS` to create a "top N newest" workflow
+
+**Performance Tips:**
+
+- Large playlists (1000+ items) can take minutes just to *fetch* metadata
+- `MAX_DOWNLOADS` stops downloading after N new videos (but still fetches full playlist info)
+- Use `PLAYLIST_END=50` to limit both fetching AND downloading
+- Combine with `RETENTION_DAYS` to maintain a rolling window of content
+
+**Example: The Perfect Setup**
+
+```bash
+# In .env file
+PLAYLIST_REVERSE=true      # Newest first
+MAX_DOWNLOADS=20           # Stop after 20 new videos
+RETENTION_DAYS=30          # Keep only 30 days of videos
+
+# Run daily via cron
+0 2 * * * cd /path/to/ytdlp_wrapper && uv run python download.py
+```
+
+Result: Always have the 20 most recent videos from the last 30 days, automatically managed!
 
 ## Usage
 
@@ -554,6 +703,27 @@ A: The script is open source and you can review the code. It only uses yt-dlp's 
 
 **Q: Do I need to learn UV to use this?**
 A: No! The basic commands (`uv sync` and `uv run python download.py`) are all you need. UV handles everything else automatically.
+
+**Q: How does the retention policy work?**
+A: When `RETENTION_DAYS` is set, the script automatically deletes files older than that many days (based on download date) before downloading new videos. Files are removed from both the filesystem and the archive JSON. If not set, all files are kept indefinitely.
+
+**Q: What happens to videos deleted by retention?**
+A: They're permanently deleted from your computer and removed from the archive. If the same video is still in your YouTube playlist, it will be re-downloaded on the next run (as a "new" video).
+
+**Q: Can I recover videos after retention cleanup?**
+A: No, deleted files cannot be recovered. If you need a video back, it will be re-downloaded if it's still in your Watch Later playlist. Consider setting a longer retention period if you're unsure.
+
+**Q: My Watch Later playlist has 500+ videos. Will it download everything?**
+A: By default yes, but you can control this! Set `MAX_DOWNLOADS=25` to limit downloads per run, or use `PLAYLIST_END=50` to only process the first 50 items. The script defaults to `PLAYLIST_REVERSE=true` so you'll get newest videos first.
+
+**Q: What's the difference between MAX_DOWNLOADS and PLAYLIST_END?**
+A: `PLAYLIST_END=50` limits playlist processing to first 50 items (faster metadata fetching). `MAX_DOWNLOADS=25` processes the whole playlist but stops after downloading 25 NEW videos (skipped videos don't count). Use `MAX_DOWNLOADS` for most cases.
+
+**Q: Why does fetching a large playlist take so long?**
+A: YouTube's API requires fetching metadata for every video. For 1000+ item playlists, this can take several minutes. Use `PLAYLIST_END` to limit the range, or let it run once and subsequent runs will be much faster (only new items).
+
+**Q: Can I download oldest videos first instead?**
+A: Yes! Set `PLAYLIST_REVERSE=false` in your `.env`. However, for Watch Later playlists, newest-first is usually better since you likely want your recent additions.
 
 ## Support
 
