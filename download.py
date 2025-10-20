@@ -476,8 +476,28 @@ def run_download():
         # Show download count
         console.print(f"\n[cyan]📥 Downloading {len(to_download)} new video(s)...[/cyan]\n")
 
-        # Now actually download
-        ydl.download(to_download)
+        # Download videos one at a time to handle errors gracefully
+        for idx, url in enumerate(to_download, 1):
+            try:
+                console.print(f"[dim]({idx}/{len(to_download)})[/dim]", end=" ")
+                ydl.download([url])
+            except Exception as e:
+                # Extract video ID from URL if possible
+                video_id = url.split('=')[-1] if '=' in url else 'unknown'
+                error_msg = str(e)
+
+                # Track the error
+                stats["errors"].append({
+                    "video_id": video_id,
+                    "url": url,
+                    "error": error_msg
+                })
+
+                # Display user-friendly error message
+                console.print(f"[red]❌ Error:[/red] Could not download video (ID: {video_id})")
+                console.print(f"[dim]   Reason: {error_msg}[/dim]")
+                console.print(f"[dim]   Continuing with remaining videos...[/dim]\n")
+                continue
 
         # After download, perform fallback renaming where upload_date was missing
         # For video in archive that has filepath, we can check filename and rename if needed
