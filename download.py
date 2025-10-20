@@ -467,8 +467,7 @@ def run_download():
         except ValueError:
             console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
 
-    # First, let's try a simpler approach - just limit the playlist processing
-    # and then use yt-dlp's built-in download limiting
+    # Let's use a different approach - disable playlistreverse temporarily for limiting
     if MAX_DOWNLOADS:
         try:
             max_dl = int(MAX_DOWNLOADS)
@@ -479,7 +478,9 @@ def run_download():
 
             console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
 
-            # Use playlist_items to limit metadata extraction
+            # Temporarily disable playlistreverse to get predictable item numbering
+            # We'll handle the reverse order in our filtering logic instead
+            ydl_opts["playlistreverse"] = False
             ydl_opts["playlist_items"] = f"1:{estimated_check}"
 
         except ValueError:
@@ -494,10 +495,15 @@ def run_download():
         entries = info.get("entries", [])
 
         # Filter out already downloaded videos
+        # Since we disabled playlistreverse, entries are in oldest-first order
+        # We need to reverse them to get newest-first, then filter
         to_download = []
         skipped_count = 0
 
-        for ent in entries:
+        # Reverse the entries to get newest first (since playlistreverse was disabled)
+        entries_reversed = list(reversed(entries))
+
+        for ent in entries_reversed:
             vid = ent.get("id")
             if vid is None:
                 continue
