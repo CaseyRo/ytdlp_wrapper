@@ -240,7 +240,7 @@ def send_webhook(payload):
 
 # Hook: called periodically with download status
 def progress_hook(d):
-    # d is a dict with info, see d['status'] in {“downloading”, “finished”}
+    # d is a dict with info, see d['status'] in {"downloading", "finished", "error"}
     if d.get("status") == "finished":
         # final path
         filepath = d.get("filename")
@@ -275,7 +275,22 @@ def progress_hook(d):
 
                 # Send webhook notification (includes video_id in payload)
                 send_webhook(metadata)
-    # (you could also track progress in “downloading” status if you like)
+    elif d.get("status") == "error":
+        # Track download errors
+        info = d.get("info_dict", {})
+        vid = info.get("id", "unknown")
+        title = info.get("title", "Unknown")
+        error_msg = d.get("error", "Unknown error")
+
+        stats["errors"].append({
+            "video_id": vid,
+            "title": title,
+            "error": str(error_msg)
+        })
+
+        console.print(f"[red]❌ Error:[/red] {title} [dim](ID: {vid})[/dim]")
+        console.print(f"[dim]   Skipping and continuing with next video...[/dim]\n")
+    # (you could also track progress in "downloading" status if you like)
 
 def determine_outtmpl():
     # Template tries upload date; fallback to placeholder that we’ll rename later
@@ -423,6 +438,7 @@ def run_download():
         "merge_output_format": "mp4",  # or mkv, as you prefer
         "quiet": False,
         "no_warnings": True,
+        "ignoreerrors": True,  # Continue on download errors (e.g., private/unavailable videos)
         # set mtime so the file timestamp matches upload date (if available)
         # default behavior of yt-dlp is to set file mtime to upload-date if known. (see man)
         # If you want always use download time, you can disable it:
@@ -476,28 +492,36 @@ def run_download():
         # Show download count
         console.print(f"\n[cyan]📥 Downloading {len(to_download)} new video(s)...[/cyan]\n")
 
-        # Download videos one at a time to handle errors gracefully
-        for idx, url in enumerate(to_download, 1):
+        # Track which videos we're attempting to download
+        attempted_videos = {}
+        for url in to_download:
             try:
-                console.print(f"[dim]({idx}/{len(to_download)})[/dim]", end=" ")
-                ydl.download([url])
-            except Exception as e:
-                # Extract video ID from URL if possible
-                video_id = url.split('=')[-1] if '=' in url else 'unknown'
-                error_msg = str(e)
+                # Extract video ID from URL
+                if 'v=' in url:
+                    vid = url.split('v=')[-1].split('&')[0]
+                elif 'youtu.be/' in url:
+                    vid = url.split('youtu.be/')[-1].split('?')[0]
+                else:
+                    vid = url.split('/')[-1].split('?')[0]
+                attempted_videos[vid] = url
+            except:
+                pass
 
-                # Track the error
-                stats["errors"].append({
-                    "video_id": video_id,
-                    "url": url,
-                    "error": error_msg
-                })
+        # Now actually download (ignoreerrors=True will skip failed videos)
+        ydl.download(to_download)
 
-                # Display user-friendly error message
-                console.print(f"[red]❌ Error:[/red] Could not download video (ID: {video_id})")
-                console.print(f"[dim]   Reason: {error_msg}[/dim]")
-                console.print(f"[dim]   Continuing with remaining videos...[/dim]\n")
-                continue
+        # After download, check which videos failed (attempted but not downloaded)
+        archive_after = load_archive()
+        downloaded_ids = set(stats["downloaded"])
+        for vid, url in attempted_videos.items():
+            if vid not in archive_after and vid not in [d.get("video_id") for d in stats["downloaded"]]:
+                # This video was attempted but not downloaded
+                if vid not in [e.get("video_id") for e in stats["errors"]]:
+                    stats["errors"].append({
+                        "video_id": vid,
+                        "title": "Unknown",
+                        "error": "Failed to download (video may be private, unavailable, or removed)"
+                    })
 
         # After download, perform fallback renaming where upload_date was missing
         # For video in archive that has filepath, we can check filename and rename if needed
