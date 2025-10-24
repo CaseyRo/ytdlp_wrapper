@@ -3,6 +3,7 @@
 
 # Downloaded videos directory
 yt_watchlater/
+videos/
 
 # Archive file
 yt_watchlater_archive.json
