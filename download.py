@@ -5,6 +5,7 @@ import sys
 import json
 import datetime
 import time
+import argparse
 from yt_dlp import YoutubeDL
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -43,8 +44,37 @@ MAX_DOWNLOADS = os.environ.get("MAX_DOWNLOADS", None)  # Default: None (unlimite
 PLAYLIST_START = os.environ.get("PLAYLIST_START", None)  # Default: None (start from beginning)
 PLAYLIST_END = os.environ.get("PLAYLIST_END", None)  # Default: None (go to end)
 
-# Initialize Rich console
-console = Console()
+# JSON output configuration
+JSON_OUTPUT = os.environ.get("JSON_OUTPUT", "false").lower() in ("true", "1", "yes")
+
+# Parse command line arguments
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="YouTube Watch Later Downloader with JSON output support",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python download.py                    # Normal rich output
+  python download.py --json-output     # JSON output mode
+  JSON_OUTPUT=true python download.py  # JSON output via environment variable
+        """
+    )
+    parser.add_argument(
+        "--json-output",
+        action="store_true",
+        help="Output results in JSON format instead of rich terminal formatting"
+    )
+    return parser.parse_args()
+
+# Parse arguments
+args = parse_arguments()
+
+# Override JSON_OUTPUT with command line argument if provided
+if args.json_output:
+    JSON_OUTPUT = True
+
+# Initialize Rich console (conditional based on JSON mode)
+console = Console() if not JSON_OUTPUT else None
 
 # Global variables for statistics
 stats = {
@@ -56,8 +86,46 @@ stats = {
     "cleaned_bytes": 0
 }
 
+def format_json_output():
+    """Format the final results as JSON output"""
+    if not stats["start_time"]:
+        return json.dumps({"error": "No execution data available"})
+
+    elapsed = time.time() - stats["start_time"]
+
+    # Calculate cleanup statistics
+    cleanup_stats = None
+    if stats['cleaned_files']:
+        cleanup_stats = {
+            "files_deleted": len(stats['cleaned_files']),
+            "space_freed_bytes": stats['cleaned_bytes']
+        }
+
+    # Build the JSON output
+    result = {
+        "summary": {
+            "total_videos": len(stats['downloaded']) + len(stats['skipped']),
+            "downloaded_count": len(stats['downloaded']),
+            "skipped_count": len(stats['skipped']),
+            "error_count": len(stats['errors']),
+            "duration_seconds": round(elapsed, 2)
+        },
+        "downloaded": stats['downloaded'],
+        "skipped": stats['skipped'],
+        "errors": stats['errors']
+    }
+
+    # Add cleanup stats if available
+    if cleanup_stats:
+        result["cleanup"] = cleanup_stats
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
 def show_banner():
     """Display welcome banner"""
+    if JSON_OUTPUT:
+        return  # Skip banner in JSON mode
+
     banner = Panel(
         "[bold cyan]📹 YouTube Watch Later Downloader[/bold cyan]\n"
         "[dim]v1.0.0[/dim]",
@@ -69,6 +137,9 @@ def show_banner():
 
 def show_config_summary():
     """Display configuration summary panel"""
+    if JSON_OUTPUT:
+        return  # Skip config summary in JSON mode
+
     retention_status = '✗ Disabled'
     if RETENTION_DAYS:
         try:
@@ -112,6 +183,9 @@ def show_config_summary():
 
 def show_completion_summary():
     """Display completion summary with statistics"""
+    if JSON_OUTPUT:
+        return  # Skip completion summary in JSON mode
+
     if not stats["start_time"]:
         return
 
@@ -225,18 +299,24 @@ def send_webhook(payload):
         # Send request with timeout
         with urlopen(req, timeout=10) as response:
             if response.status >= 200 and response.status < 300:
-                console.print(f"[green]✓[/green] Webhook notification sent successfully")
+                if not JSON_OUTPUT:
+                    console.print(f"[green]✓[/green] Webhook notification sent successfully")
             else:
-                console.print(f"[yellow]⚠[/yellow] Webhook returned status {response.status}")
+                if not JSON_OUTPUT:
+                    console.print(f"[yellow]⚠[/yellow] Webhook returned status {response.status}")
 
     except HTTPError as e:
-        console.print(f"[yellow]⚠[/yellow] Webhook HTTP error {e.code}: {e.reason}")
+        if not JSON_OUTPUT:
+            console.print(f"[yellow]⚠[/yellow] Webhook HTTP error {e.code}: {e.reason}")
     except URLError as e:
-        console.print(f"[yellow]⚠[/yellow] Webhook URL error: {e.reason}")
+        if not JSON_OUTPUT:
+            console.print(f"[yellow]⚠[/yellow] Webhook URL error: {e.reason}")
     except TimeoutError:
-        console.print(f"[yellow]⚠[/yellow] Webhook request timed out")
+        if not JSON_OUTPUT:
+            console.print(f"[yellow]⚠[/yellow] Webhook request timed out")
     except Exception as e:
-        console.print(f"[yellow]⚠[/yellow] Webhook failed: {e}")
+        if not JSON_OUTPUT:
+            console.print(f"[yellow]⚠[/yellow] Webhook failed: {e}")
 
 # Hook: called periodically with download status
 def progress_hook(d):
@@ -270,8 +350,9 @@ def progress_hook(d):
                 # Track in stats
                 stats["downloaded"].append(metadata)
 
-                # Display success message
-                console.print(f"[green]✅ Downloaded:[/green] {metadata.get('title', 'Unknown')}")
+                # Display success message (skip in JSON mode)
+                if not JSON_OUTPUT:
+                    console.print(f"[green]✅ Downloaded:[/green] {metadata.get('title', 'Unknown')}")
 
                 # Send webhook notification (includes video_id in payload)
                 send_webhook(metadata)
@@ -288,8 +369,9 @@ def progress_hook(d):
             "error": str(error_msg)
         })
 
-        console.print(f"[red]❌ Error:[/red] {title} [dim](ID: {vid})[/dim]")
-        console.print(f"[dim]   Skipping and continuing with next video...[/dim]\n")
+        if not JSON_OUTPUT:
+            console.print(f"[red]❌ Error:[/red] {title} [dim](ID: {vid})[/dim]")
+            console.print(f"[dim]   Skipping and continuing with next video...[/dim]\n")
     # (you could also track progress in "downloading" status if you like)
 
 def determine_outtmpl():
@@ -339,7 +421,8 @@ def cleanup_old_files(archive, retention_days):
         download_date_str = metadata.get("download_date")
         if not download_date_str:
             # No download_date, skip with warning
-            console.print(f"[yellow]⚠[/yellow] Skipping cleanup for {video_id}: missing download_date")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Skipping cleanup for {video_id}: missing download_date")
             continue
 
         try:
@@ -351,15 +434,18 @@ def cleanup_old_files(archive, retention_days):
             if download_date < cutoff_date:
                 to_delete.append((video_id, metadata))
         except (ValueError, AttributeError) as e:
-            console.print(f"[yellow]⚠[/yellow] Invalid download_date for {video_id}: {e}")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Invalid download_date for {video_id}: {e}")
             continue
 
     if not to_delete:
-        console.print("[dim]ℹ️  No files to clean up (all within retention period)[/dim]")
+        if not JSON_OUTPUT:
+            console.print("[dim]ℹ️  No files to clean up (all within retention period)[/dim]")
         return archive
 
     # Delete files and track results
-    console.print(f"[cyan]🗑️  Cleaning up {len(to_delete)} file(s) older than {retention_days} days...[/cyan]")
+    if not JSON_OUTPUT:
+        console.print(f"[cyan]🗑️  Cleaning up {len(to_delete)} file(s) older than {retention_days} days...[/cyan]")
 
     deleted_count = 0
     for video_id, metadata in to_delete:
@@ -376,20 +462,24 @@ def cleanup_old_files(archive, retention_days):
                 os.remove(filepath)
                 stats["cleaned_bytes"] += file_size
                 deleted_count += 1
-                console.print(f"[dim]  Deleted: {os.path.basename(filepath)}[/dim]")
+                if not JSON_OUTPUT:
+                    console.print(f"[dim]  Deleted: {os.path.basename(filepath)}[/dim]")
             else:
                 # File already missing, just log warning
-                console.print(f"[yellow]⚠[/yellow] File not found (already deleted?): {filepath}")
+                if not JSON_OUTPUT:
+                    console.print(f"[yellow]⚠[/yellow] File not found (already deleted?): {filepath}")
 
             # Remove from archive
             archive.pop(video_id, None)
             stats["cleaned_files"].append(video_id)
 
         except PermissionError:
-            console.print(f"[yellow]⚠[/yellow] Permission denied deleting: {filepath}")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Permission denied deleting: {filepath}")
             # Keep in archive since we couldn't delete
         except Exception as e:
-            console.print(f"[yellow]⚠[/yellow] Error deleting {filepath}: {e}")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Error deleting {filepath}: {e}")
             # Keep in archive since we couldn't delete
 
     # Show summary
@@ -399,9 +489,11 @@ def cleanup_old_files(archive, retention_days):
             size_str = f"{size_mb / 1024:.2f} GB"
         else:
             size_str = f"{size_mb:.1f} MB"
-        console.print(f"[green]✅ Cleanup complete:[/green] Removed {deleted_count} file(s), freed {size_str}")
+        if not JSON_OUTPUT:
+            console.print(f"[green]✅ Cleanup complete:[/green] Removed {deleted_count} file(s), freed {size_str}")
 
-    console.print()
+    if not JSON_OUTPUT:
+        console.print()
     return archive
 
 def run_download():
@@ -423,11 +515,13 @@ def run_download():
                 archive = cleanup_old_files(archive, retention_days)
                 save_archive(archive)
             else:
-                console.print("[yellow]⚠[/yellow] RETENTION_DAYS must be a positive number (cleanup disabled)")
-                console.print()
+                if not JSON_OUTPUT:
+                    console.print("[yellow]⚠[/yellow] RETENTION_DAYS must be a positive number (cleanup disabled)")
+                    console.print()
         except (ValueError, TypeError):
-            console.print(f"[yellow]⚠[/yellow] Invalid RETENTION_DAYS value: {RETENTION_DAYS} (cleanup disabled)")
-            console.print()
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Invalid RETENTION_DAYS value: {RETENTION_DAYS} (cleanup disabled)")
+                console.print()
 
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",
@@ -436,7 +530,7 @@ def run_download():
         "download_archive": None,  # we won't use the built-in archive, we use JSON
         "outtmpl": determine_outtmpl(),
         "merge_output_format": "mp4",  # or mkv, as you prefer
-        "quiet": False,
+        "quiet": JSON_OUTPUT,  # Suppress yt-dlp output in JSON mode
         "no_warnings": True,
         "ignoreerrors": True,  # Continue on download errors (e.g., private/unavailable videos)
         # set mtime so the file timestamp matches upload date (if available)
@@ -455,17 +549,20 @@ def run_download():
         try:
             ydl_opts["max_downloads"] = int(MAX_DOWNLOADS)
         except ValueError:
-            console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS} (ignoring)")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS} (ignoring)")
     if PLAYLIST_START:
         try:
             ydl_opts["playlist_start"] = int(PLAYLIST_START)
         except ValueError:
-            console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_START value: {PLAYLIST_START} (ignoring)")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_START value: {PLAYLIST_START} (ignoring)")
     if PLAYLIST_END:
         try:
             ydl_opts["playlist_end"] = int(PLAYLIST_END)
         except ValueError:
-            console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Invalid PLAYLIST_END value: {PLAYLIST_END} (ignoring)")
 
     # Let's use a different approach - disable playlistreverse temporarily for limiting
     if MAX_DOWNLOADS:
@@ -476,7 +573,8 @@ def run_download():
             estimated_check = max_dl * 3
             estimated_check = min(estimated_check, 100)  # Cap at 100 to avoid long waits
 
-            console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
+            if not JSON_OUTPUT:
+                console.print(f"[cyan]📋 Checking up to {estimated_check} most recent videos for new downloads...[/cyan]\n")
 
             # Temporarily disable playlistreverse to get predictable item numbering
             # We'll handle the reverse order in our filtering logic instead
@@ -484,7 +582,8 @@ def run_download():
             ydl_opts["playlist_items"] = f"1:{estimated_check}"
 
         except ValueError:
-            console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS}")
+            if not JSON_OUTPUT:
+                console.print(f"[yellow]⚠[/yellow] Invalid MAX_DOWNLOADS value: {MAX_DOWNLOADS}")
             max_dl = None
     else:
         max_dl = None
@@ -510,7 +609,8 @@ def run_download():
             if vid in archive:
                 stats["skipped"].append({"video_id": vid, "title": ent.get('title')})
                 skipped_count += 1
-                console.print(f"[yellow]⏭️  Skipped:[/yellow] {ent.get('title', 'Unknown')} [dim](already downloaded)[/dim]")
+                if not JSON_OUTPUT:
+                    console.print(f"[yellow]⏭️  Skipped:[/yellow] {ent.get('title', 'Unknown')} [dim](already downloaded)[/dim]")
             else:
                 to_download.append(ent.get("webpage_url"))
                 # Stop if we've reached max downloads limit
@@ -518,14 +618,16 @@ def run_download():
                     break
 
         if not to_download:
-            console.print("[yellow]ℹ️  Nothing new to download.[/yellow]")
-            if skipped_count > 0:
-                console.print(f"[dim]ℹ️  Found {skipped_count} already downloaded videos in recent playlist[/dim]")
+            if not JSON_OUTPUT:
+                console.print("[yellow]ℹ️  Nothing new to download.[/yellow]")
+                if skipped_count > 0:
+                    console.print(f"[dim]ℹ️  Found {skipped_count} already downloaded videos in recent playlist[/dim]")
             show_completion_summary()
             return
 
         # Show download count
-        console.print(f"\n[cyan]📥 Downloading {len(to_download)} new video(s)...[/cyan]\n")
+        if not JSON_OUTPUT:
+            console.print(f"\n[cyan]📥 Downloading {len(to_download)} new video(s)...[/cyan]\n")
 
         # Track which videos we're attempting to download
         attempted_videos = {}
@@ -547,7 +649,8 @@ def run_download():
         if max_dl and len(to_download) > max_dl:
             # Limit the downloads to max_dl videos
             to_download = to_download[:max_dl]
-            console.print(f"[cyan]📝 Limited to {max_dl} downloads as configured[/cyan]\n")
+            if not JSON_OUTPUT:
+                console.print(f"[cyan]📝 Limited to {max_dl} downloads as configured[/cyan]\n")
 
         # Download the videos
         ydl.download(to_download)
@@ -586,13 +689,36 @@ def run_download():
     # Show completion summary
     show_completion_summary()
 
+    # Output JSON if in JSON mode
+    if JSON_OUTPUT:
+        print(format_json_output())
+
 if __name__ == "__main__":
     try:
         run_download()
     except KeyboardInterrupt:
-        console.print("\n[yellow]⚠ Download interrupted by user[/yellow]")
+        if not JSON_OUTPUT:
+            console.print("\n[yellow]⚠ Download interrupted by user[/yellow]")
         show_completion_summary()
+        if JSON_OUTPUT:
+            print(format_json_output())
         sys.exit(0)
     except Exception as e:
-        console.print(f"\n[red]❌ Error: {e}[/red]")
+        if not JSON_OUTPUT:
+            console.print(f"\n[red]❌ Error: {e}[/red]")
+        if JSON_OUTPUT:
+            error_result = {
+                "error": str(e),
+                "summary": {
+                    "total_videos": 0,
+                    "downloaded_count": 0,
+                    "skipped_count": 0,
+                    "error_count": 1,
+                    "duration_seconds": 0
+                },
+                "downloaded": [],
+                "skipped": [],
+                "errors": [{"error": str(e)}]
+            }
+            print(json.dumps(error_result, indent=2, ensure_ascii=False))
         sys.exit(1)
