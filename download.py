@@ -531,7 +531,8 @@ def run_download():
         "outtmpl": determine_outtmpl(),
         "merge_output_format": "mp4",  # or mkv, as you prefer
         "quiet": JSON_OUTPUT,  # Suppress yt-dlp output in JSON mode
-        "no_warnings": True,
+        "no_warnings": JSON_OUTPUT,  # Suppress warnings in JSON mode
+        "verbose": not JSON_OUTPUT,  # Only verbose in normal mode
         "ignoreerrors": True,  # Continue on download errors (e.g., private/unavailable videos)
         # set mtime so the file timestamp matches upload date (if available)
         # default behavior of yt-dlp is to set file mtime to upload-date if known. (see man)
@@ -588,110 +589,128 @@ def run_download():
     else:
         max_dl = None
 
-    with YoutubeDL(ydl_opts) as ydl:
-        # Extract playlist info with limited scope
-        info = ydl.extract_info(WATCHLATER_URL, download=False)
-        entries = info.get("entries", [])
-
-        # Filter out already downloaded videos
-        # Since we disabled playlistreverse, entries are in oldest-first order
-        # We need to reverse them to get newest-first, then filter
-        to_download = []
-        skipped_count = 0
-
-        # Reverse the entries to get newest first (since playlistreverse was disabled)
-        entries_reversed = list(reversed(entries))
-
-        for ent in entries_reversed:
-            vid = ent.get("id")
-            if vid is None:
-                continue
-            if vid in archive:
-                stats["skipped"].append({"video_id": vid, "title": ent.get('title')})
-                skipped_count += 1
-                if not JSON_OUTPUT:
-                    console.print(f"[yellow]⏭️  Skipped:[/yellow] {ent.get('title', 'Unknown')} [dim](already downloaded)[/dim]")
-            else:
-                to_download.append(ent.get("webpage_url"))
-                # Stop if we've reached max downloads limit
-                if max_dl and len(to_download) >= max_dl:
-                    break
-
-        if not to_download:
-            if not JSON_OUTPUT:
-                console.print("[yellow]ℹ️  Nothing new to download.[/yellow]")
-                if skipped_count > 0:
-                    console.print(f"[dim]ℹ️  Found {skipped_count} already downloaded videos in recent playlist[/dim]")
-            show_completion_summary()
-            return
-
-        # Show download count
-        if not JSON_OUTPUT:
-            console.print(f"\n[cyan]📥 Downloading {len(to_download)} new video(s)...[/cyan]\n")
-
-        # Track which videos we're attempting to download
-        attempted_videos = {}
-        for url in to_download:
-            try:
-                # Extract video ID from URL
-                if 'v=' in url:
-                    vid = url.split('v=')[-1].split('&')[0]
-                elif 'youtu.be/' in url:
-                    vid = url.split('youtu.be/')[-1].split('?')[0]
-                else:
-                    vid = url.split('/')[-1].split('?')[0]
-                attempted_videos[vid] = url
-            except:
-                pass
-
-        # Now actually download with proper limiting
-        # Use yt-dlp's built-in max_downloads if we have a limit
-        if max_dl and len(to_download) > max_dl:
-            # Limit the downloads to max_dl videos
-            to_download = to_download[:max_dl]
-            if not JSON_OUTPUT:
-                console.print(f"[cyan]📝 Limited to {max_dl} downloads as configured[/cyan]\n")
-
-        # Download the videos
-        ydl.download(to_download)
-
-        # After download, check which videos failed (attempted but not downloaded)
-        archive_after = load_archive()
-        downloaded_ids = set(stats["downloaded"])
-        for vid, url in attempted_videos.items():
-            if vid not in archive_after and vid not in [d.get("video_id") for d in stats["downloaded"]]:
-                # This video was attempted but not downloaded
-                if vid not in [e.get("video_id") for e in stats["errors"]]:
-                    stats["errors"].append({
-                        "video_id": vid,
-                        "title": "Unknown",
-                        "error": "Failed to download (video may be private, unavailable, or removed)"
-                    })
-
-        # After download, perform fallback renaming where upload_date was missing
-        # For video in archive that has filepath, we can check filename and rename if needed
-        archive2 = load_archive()
-        for vid, meta in archive2.items():
-            fp = meta.get("filepath")
-            if not fp:
-                continue
-            # We want to re-open the file info via yt-dlp to get metadata
-            try:
-                info_vid = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-            except Exception:
-                info_vid = {}
-            newpath = rename_fallback_missing_timestamp(fp, info_vid)
-            # if renamed, update archive
-            if newpath != fp:
-                archive2[vid]["filepath"] = newpath
-        save_archive(archive2)
-
-    # Show completion summary
-    show_completion_summary()
-
-    # Output JSON if in JSON mode
+    # Redirect yt-dlp output to null device in JSON mode
     if JSON_OUTPUT:
-        print(format_json_output())
+        # Save original stdout/stderr
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        # Redirect to null device
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
+
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            # Extract playlist info with limited scope
+            info = ydl.extract_info(WATCHLATER_URL, download=False)
+            entries = info.get("entries", [])
+
+            # Filter out already downloaded videos
+            # Since we disabled playlistreverse, entries are in oldest-first order
+            # We need to reverse them to get newest-first, then filter
+            to_download = []
+            skipped_count = 0
+
+            # Reverse the entries to get newest first (since playlistreverse was disabled)
+            entries_reversed = list(reversed(entries))
+
+            for ent in entries_reversed:
+                vid = ent.get("id")
+                if vid is None:
+                    continue
+                if vid in archive:
+                    stats["skipped"].append({"video_id": vid, "title": ent.get('title')})
+                    skipped_count += 1
+                    if not JSON_OUTPUT:
+                        console.print(f"[yellow]⏭️  Skipped:[/yellow] {ent.get('title', 'Unknown')} [dim](already downloaded)[/dim]")
+                else:
+                    to_download.append(ent.get("webpage_url"))
+                    # Stop if we've reached max downloads limit
+                    if max_dl and len(to_download) >= max_dl:
+                        break
+
+            if not to_download:
+                if not JSON_OUTPUT:
+                    console.print("[yellow]ℹ️  Nothing new to download.[/yellow]")
+                    if skipped_count > 0:
+                        console.print(f"[dim]ℹ️  Found {skipped_count} already downloaded videos in recent playlist[/dim]")
+                show_completion_summary()
+                return
+
+            # Show download count
+            if not JSON_OUTPUT:
+                console.print(f"\n[cyan]📥 Downloading {len(to_download)} new video(s)...[/cyan]\n")
+
+            # Track which videos we're attempting to download
+            attempted_videos = {}
+            for url in to_download:
+                try:
+                    # Extract video ID from URL
+                    if 'v=' in url:
+                        vid = url.split('v=')[-1].split('&')[0]
+                    elif 'youtu.be/' in url:
+                        vid = url.split('youtu.be/')[-1].split('?')[0]
+                    else:
+                        vid = url.split('/')[-1].split('?')[0]
+                    attempted_videos[vid] = url
+                except:
+                    pass
+
+            # Now actually download with proper limiting
+            # Use yt-dlp's built-in max_downloads if we have a limit
+            if max_dl and len(to_download) > max_dl:
+                # Limit the downloads to max_dl videos
+                to_download = to_download[:max_dl]
+                if not JSON_OUTPUT:
+                    console.print(f"[cyan]📝 Limited to {max_dl} downloads as configured[/cyan]\n")
+
+            # Download the videos
+            ydl.download(to_download)
+
+            # After download, check which videos failed (attempted but not downloaded)
+            archive_after = load_archive()
+            downloaded_ids = set(stats["downloaded"])
+            for vid, url in attempted_videos.items():
+                if vid not in archive_after and vid not in [d.get("video_id") for d in stats["downloaded"]]:
+                    # This video was attempted but not downloaded
+                    if vid not in [e.get("video_id") for e in stats["errors"]]:
+                        stats["errors"].append({
+                            "video_id": vid,
+                            "title": "Unknown",
+                            "error": "Failed to download (video may be private, unavailable, or removed)"
+                        })
+
+            # After download, perform fallback renaming where upload_date was missing
+            # For video in archive that has filepath, we can check filename and rename if needed
+            archive2 = load_archive()
+            for vid, meta in archive2.items():
+                fp = meta.get("filepath")
+                if not fp:
+                    continue
+                # We want to re-open the file info via yt-dlp to get metadata
+                try:
+                    info_vid = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+                except Exception:
+                    info_vid = {}
+                newpath = rename_fallback_missing_timestamp(fp, info_vid)
+                # if renamed, update archive
+                if newpath != fp:
+                    archive2[vid]["filepath"] = newpath
+            save_archive(archive2)
+
+        # Show completion summary
+        show_completion_summary()
+
+        # Output JSON if in JSON mode
+        if JSON_OUTPUT:
+            print(format_json_output())
+
+    finally:
+        # Restore stdout/stderr in JSON mode
+        if JSON_OUTPUT:
+            sys.stdout.close()
+            sys.stderr.close()
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
 
 if __name__ == "__main__":
     try:
